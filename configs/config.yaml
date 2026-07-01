@@ -1,0 +1,38 @@
+# Configuración central del TFM - Detección de Retinopatía Diabética
+
+data:
+  data_root: "C:/Users/Jana/Downloads/tfm/EyePACS/dr_unified_v2"
+  train_dir: "train"
+  val_dir: "val"
+  test_dir: "test"
+  num_classes_raw: 5        # carpetas 0-4 como en el dataset
+  image_size: 380            # EfficientNet-B0~B4 suelen ir bien en 224-380. MobileNetV3 con 224 es más liviano.
+  batch_size: 32
+  num_workers: 4
+
+experiment:
+  task_modes: ["binary", "multiclass"]   # se entrenan los 2 para comparar
+  architectures: ["efficientnet_b0", "mobilenet_v3_large"]
+  n_runs: 3                  # repeticiones por configuración, para media +- desviación
+  base_seed: 42               # seed base; cada run usa base_seed + run_idx
+
+training:
+  epochs: 15
+  lr: 0.0003
+  weight_decay: 0.00001
+  optimizer: "adamw"
+  scheduler: "cosine"
+  early_stopping_patience: 5
+  mixed_precision: true
+
+augmentation:
+  horizontal_flip: true
+  vertical_flip: false
+  rotation_degrees: 15
+  color_jitter: true
+  clahe: true                 # técnica específica para fondo de ojo (H4 del TFM)
+
+paths:
+  checkpoints_dir: "outputs/checkpoints"
+  logs_dir: "outputs/logs"
+  results_dir: "outputs/results"
