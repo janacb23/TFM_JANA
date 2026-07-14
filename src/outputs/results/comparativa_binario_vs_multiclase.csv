@@ -1,0 +1,5 @@
+architecture,task_mode,auc_mean,auc_std,sensitivity_mean,sensitivity_std,specificity_mean,specificity_std,f1_mean,f1_std,accuracy_mean,accuracy_std,n_runs,auc_macro_mean,auc_macro_std,f1_macro_mean,f1_macro_std,recall_macro_mean,recall_macro_std
+efficientnet_b0,binary,93.51,0.03,76.09,2.91,96.96,1.02,82.24,0.6,91.66,0.13,3,,,,,,
+efficientnet_b0,multiclass,,,,,,,,,87.83,0.2,3,92.4,0.09,60.04,1.71,56.07,2.27
+mobilenet_v3_large,binary,93.06,0.05,76.47,2.61,96.24,1.47,81.58,0.25,91.22,0.44,3,,,,,,
+mobilenet_v3_large,multiclass,,,,,,,,,87.38,0.25,3,92.11,0.06,59.7,0.58,55.3,1.26
