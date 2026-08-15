@@ -2,16 +2,18 @@
 train_foundation.py
 
 Pipeline de modelos fundacionales para detección de retinopatía diabética
-Implementa 4 configuraciones:
-    1. CLIP zero-shot: clasificación por similitud con prompts de texto, sin ejemplos etiquetados
-    2. CLIP few-shot: embeddings CLIP + clasificador ligero (Logistic Regression)
-    3. DINOv2 zero-shot: clasificación por similitud de embeddings con k-NN (1-shot, 5-shot)
-    4. DINOv2 linear probe: embeddings DINOv2 + clasificador ligero
+Implementa 5 configuraciones:
+    1. CLIP zero-shot:      clasificación por similitud con prompts de texto, sin ejemplos etiquetados
+    2. CLIP few-shot:       k ejemplos por clase (k=1,5): embeddings CLIP + LogisticRegression ligera
+    3. CLIP linear probe:   todo el train: embeddings CLIP + LogisticRegression
+    4. DINOv2 few-shot:     k-NN ponderado sobre embeddings DINOv2 (k=1,5)
+    5. DINOv2 linear probe: todo el train: embeddings DINOv2 + LogisticRegression
 
 Uso:
     python train_foundation.py --config ../configs/config.yaml --mode all
     python train_foundation.py --config ../configs/config.yaml --mode clip_zeroshot
     python train_foundation.py --config ../configs/config.yaml --mode clip_fewshot
+    python train_foundation.py --config ../configs/config.yaml --mode clip_linearprobe
     python train_foundation.py --config ../configs/config.yaml --mode dino_zeroshot
     python train_foundation.py --config ../configs/config.yaml --mode dino_linearprobe
 """
@@ -172,7 +174,7 @@ def clip_zeroshot(cfg: dict, device: torch.device) -> dict:
 
 
 # ─────────────────────────────────────────────
-# 2. CLIP Few-Shot
+# 2. CLIP Few-Shot y CLIP Linear Probe
 # ─────────────────────────────────────────────
 
 def extract_clip_embeddings(samples, processor, model, device, batch_size=32):
@@ -193,8 +195,69 @@ def extract_clip_embeddings(samples, processor, model, device, batch_size=32):
 
 
 def clip_fewshot(cfg: dict, device: torch.device,
-                 n_runs: int = 3, base_seed: int = 42) -> dict:
-    print("\n=== CLIP Few-Shot (linear probe) ===")
+                 k_shots: list = [1, 5], n_runs: int = 3,
+                 base_seed: int = 42) -> dict:
+    """
+    CLIP few-shot: selecciona k ejemplos POR CLASE aleatoriamente,
+    extrae sus embeddings CLIP y entrena una LogisticRegression ligera
+    La seed controla qué k ejemplos se eligen (variabilidad entre runs)
+    """
+    print("\n=== CLIP Few-Shot (real) ===")
+    model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
+    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+    model.eval()
+
+    data_root = cfg["data"]["data_root"]
+    train_dir = os.path.join(data_root, cfg["data"]["train_dir"])
+    test_dir = os.path.join(data_root, cfg["data"]["test_dir"])
+
+    print("  Extrayendo embeddings de test...")
+    test_samples = load_images_from_folder(test_dir, task_mode="binary")
+    X_test, y_test = extract_clip_embeddings(test_samples, processor, model, device)
+
+    # Cargar lista de todos los samples del train (solo rutas, no imágenes)
+    train_samples_all = load_images_from_folder(train_dir, task_mode="binary")
+    class_0 = [s for s in train_samples_all if s[1] == 0]
+    class_1 = [s for s in train_samples_all if s[1] == 1]
+
+    all_results = {}
+    for k in k_shots:
+        print(f"\n  -- {k}-shot --")
+        run_metrics = []
+        for run_idx in range(n_runs):
+            seed = base_seed + run_idx
+            set_seed(seed)
+
+            # Seleccionar k ejemplos por clase aleatoriamente (seed controla la selección)
+            c0 = class_0.copy()
+            c1 = class_1.copy()
+            random.shuffle(c0)
+            random.shuffle(c1)
+            support_samples = c0[:k] + c1[:k]
+
+            X_support, y_support = extract_clip_embeddings(
+                support_samples, processor, model, device
+            )
+
+            clf = LogisticRegression(max_iter=1000, C=1.0)
+            clf.fit(X_support, y_support)
+            y_pred = clf.predict(X_test)
+            y_proba = clf.predict_proba(X_test)[:, 1]
+            metrics = compute_binary_metrics(y_test, y_pred, y_proba)
+            print(f"    Run {run_idx+1}: {format_metrics(metrics)}")
+            run_metrics.append(metrics)
+
+        all_results[f"{k}shot"] = _aggregate(run_metrics)
+
+    return all_results
+
+
+def clip_linearprobe(cfg: dict, device: torch.device,
+                     n_runs: int = 3, base_seed: int = 42) -> dict:
+    """
+    CLIP linear probe: usa todo el train set para entrenar la LogisticRegression
+    """
+    print("\n=== CLIP Linear Probe (todo el train) ===")
     model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
     processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
     model.eval()
@@ -223,8 +286,7 @@ def clip_fewshot(cfg: dict, device: torch.device,
         print(f"  Run {run_idx+1}: {format_metrics(metrics)}")
         run_metrics.append(metrics)
 
-    summary = _aggregate(run_metrics)
-    return summary
+    return _aggregate(run_metrics)
 
 
 # ─────────────────────────────────────────────
@@ -374,7 +436,7 @@ def main():
     parser.add_argument("--config", type=str, default="../configs/config.yaml")
     parser.add_argument("--mode", type=str, default="all",
                         choices=["all", "clip_zeroshot", "clip_fewshot",
-                                 "dino_zeroshot", "dino_linearprobe"])
+                                 "clip_linearprobe", "dino_zeroshot", "dino_linearprobe"])
     args = parser.parse_args()
 
     with open(args.config, "r", encoding="utf-8") as f:
@@ -393,8 +455,15 @@ def main():
         save_results(metrics, os.path.join(results_dir, "clip_zeroshot_summary.json"))
 
     if args.mode in ("all", "clip_fewshot"):
-        summary = clip_fewshot(cfg, device, n_runs=n_runs, base_seed=base_seed)
-        save_results(summary, os.path.join(results_dir, "clip_fewshot_summary.json"))
+        # Few-shot REAL: k ejemplos por clase (k=1, k=5)
+        results = clip_fewshot(cfg, device, k_shots=[1, 5],
+                               n_runs=n_runs, base_seed=base_seed)
+        save_results(results, os.path.join(results_dir, "clip_fewshot_summary.json"))
+
+    if args.mode in ("all", "clip_linearprobe"):
+        # Linear probe: todo el train set
+        summary = clip_linearprobe(cfg, device, n_runs=n_runs, base_seed=base_seed)
+        save_results(summary, os.path.join(results_dir, "clip_linearprobe_summary.json"))
 
     if args.mode in ("all", "dino_zeroshot"):
         results = dino_zeroshot(cfg, device, k_shots=[1, 5],
